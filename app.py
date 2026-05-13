@@ -1046,12 +1046,12 @@ def render_sidebar() -> tuple[str | None, dict, str]:
         )
 
         # Check if the key is in the "Vault" (Secrets) first
-    if "GEMINI_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_KEY"]
-        st.sidebar.success("🟢 API Key Loaded from Secrets")
-    else:
-        # If not found, ask the user to type it in manually
-        api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+        if "GEMINI_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_KEY"]
+            st.sidebar.success("🟢 API Key Loaded from Secrets")
+        else:
+            # If not found, ask the user to type it in manually
+            api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
 
         if api_key:
