@@ -455,7 +455,7 @@ def get_gemini_client(api_key: str):
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash-exp")
         return model
     except ImportError:
         st.error("❌ `google-generativeai` not installed. Run: pip install google-generativeai")
