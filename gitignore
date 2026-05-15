@@ -1,0 +1,6 @@
+# FinCrime Dojo .gitignore
+.streamlit/secrets.toml
+dojo_progress.json
+__pycache__/
+*.pyc
+.env
