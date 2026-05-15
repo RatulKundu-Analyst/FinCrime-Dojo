@@ -2,7 +2,7 @@
 ╔══════════════════════════════════════════════════════════╗
 ║         THE FINCRIME DOJO  —  GOD MODE v1.0             ║
 ║   AI-Powered Financial Crime Analytics Training App      ║
-║   Stack: Streamlit + Google Gemini + SQLite + Pandas     ║
+║   Stack: Streamlit + Google Gemini 2.5 + SQLite          ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -13,18 +13,17 @@ import json
 import re
 import io
 import traceback
-import time
 from pathlib import Path
 from contextlib import redirect_stdout
 
-# ── Optional Gemini import (graceful degradation) ──────────────
+# ── Optional Gemini ────────────────────────────────────────────
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
 
-# ── Optional cookie manager (graceful degradation) ─────────────
+# ── Optional cookie manager ────────────────────────────────────
 try:
     import extra_streamlit_components as stx
     COOKIES_AVAILABLE = True
@@ -33,7 +32,7 @@ except ImportError:
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                   PAGE CONFIG & CSS                         ║
+# ║                   PAGE CONFIG                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 st.set_page_config(
@@ -42,6 +41,36 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║              API KEY — READ FROM SECRETS FIRST              ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+def resolve_api_key() -> tuple[str, str]:
+    """
+    Returns (api_key, source_label).
+    Priority:
+      1. st.secrets["GEMINI_KEY"]   ← .streamlit/secrets.toml
+      2. st.secrets["gemini_key"]   ← alternate casing
+      3. Session state (manual input fallback)
+    """
+    for secret_name in ("GEMINI_KEY", "gemini_key", "GEMINI_API_KEY", "gemini_api_key"):
+        try:
+            key = st.secrets[secret_name]
+            if key and str(key).strip():
+                return str(key).strip(), "SECRETS"
+        except (KeyError, FileNotFoundError):
+            continue
+    # Fallback: manual input stored in session state
+    manual = st.session_state.get("_manual_api_key", "")
+    if manual:
+        return manual, "MANUAL"
+    return "", "NONE"
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║                       CSS                                   ║
+# ╚══════════════════════════════════════════════════════════════╝
 
 CYBERPUNK_CSS = """
 <style>
@@ -55,6 +84,7 @@ CYBERPUNK_CSS = """
   --amber:        #ffb000;
   --red:          #ff3c5c;
   --blue:         #00d4ff;
+  --purple:       #bf5fff;
   --bg-black:     #020c07;
   --bg-panel:     #050f0a;
   --bg-card:      #0a1a10;
@@ -71,13 +101,11 @@ html, body, .stApp {
   color: var(--green) !important;
   font-family: var(--font-mono) !important;
 }
-
-/* Scanline overlay */
 .stApp::before {
   content: "";
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
+  position: fixed; top:0; left:0; right:0; bottom:0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px);
   pointer-events: none;
   z-index: 9999;
 }
@@ -89,7 +117,7 @@ html, body, .stApp {
 [data-testid="stSidebar"] * { color: var(--green) !important; font-family: var(--font-mono) !important; }
 [data-testid="stSidebar"] input { background: var(--bg-terminal) !important; border: 1px solid var(--border) !important; color: var(--green) !important; }
 
-h1, h2, h3, h4 {
+h1,h2,h3,h4 {
   font-family: var(--font-display) !important;
   color: var(--green) !important;
   text-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,159,0.3) !important;
@@ -111,15 +139,25 @@ p, li, label, .stMarkdown { font-family: var(--font-mono) !important; color: var
   transition: all 0.2s ease !important;
   box-shadow: 0 0 10px var(--green-glow) !important;
 }
-.stButton > button:hover { background: var(--green-glow) !important; box-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,159,0.2) !important; transform: translateY(-1px) !important; }
+.stButton > button:hover {
+  background: var(--green-glow) !important;
+  box-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,159,0.2) !important;
+  transform: translateY(-1px) !important;
+}
 
-.stTextArea textarea { background: var(--bg-terminal) !important; color: var(--green) !important; font-family: var(--font-mono) !important; font-size: 0.9rem !important; border: 1px solid var(--border) !important; border-radius: 4px !important; caret-color: var(--green) !important; }
+.stTextArea textarea {
+  background: var(--bg-terminal) !important;
+  color: var(--green) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.9rem !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 4px !important;
+  caret-color: var(--green) !important;
+}
 .stTextArea textarea:focus { border-color: var(--green) !important; box-shadow: 0 0 10px var(--green-glow) !important; }
 
 .stSelectbox > div > div { background: var(--bg-terminal) !important; border: 1px solid var(--border) !important; color: var(--green) !important; }
-
 .stDataFrame { border: 1px solid var(--border) !important; border-radius: 4px !important; }
-[data-testid="stDataFrame"] * { font-family: var(--font-mono) !important; }
 
 .stTabs [data-baseweb="tab-list"] { background: var(--bg-panel) !important; border-bottom: 1px solid var(--border) !important; gap: 4px !important; }
 .stTabs [data-baseweb="tab"] { background: transparent !important; color: var(--green-dim) !important; font-family: var(--font-display) !important; font-size: 0.68rem !important; letter-spacing: 1px !important; border: 1px solid transparent !important; border-radius: 4px 4px 0 0 !important; padding: 8px 20px !important; }
@@ -134,40 +172,46 @@ p, li, label, .stMarkdown { font-family: var(--font-mono) !important; color: var
 ::-webkit-scrollbar-track { background: var(--bg-black); }
 ::-webkit-scrollbar-thumb { background: var(--green-dark); border-radius: 3px; }
 
-.dojo-header { text-align: center; padding: 20px 0 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
-.dojo-header h1 { font-size: 1.9rem !important; letter-spacing: 6px !important; margin: 0 !important; }
-.dojo-header .subtitle { color: var(--green-dim); font-size: 0.65rem; letter-spacing: 4px; margin-top: 4px; }
+/* ── Custom components ── */
+.dojo-header { text-align:center; padding:20px 0 10px 0; border-bottom:1px solid var(--border); margin-bottom:24px; }
+.dojo-header h1 { font-size:1.9rem !important; letter-spacing:6px !important; margin:0 !important; }
+.dojo-header .subtitle { color:var(--green-dim); font-size:0.65rem; letter-spacing:4px; margin-top:4px; }
 
-.terminal-box { background: var(--bg-terminal); border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 4px; padding: 16px; font-family: var(--font-mono); color: var(--green); margin: 8px 0; }
-.terminal-box.error { border-left-color: var(--red); color: var(--red); }
-.terminal-box.warning { border-left-color: var(--amber); color: var(--amber); }
-.terminal-box.success { border-left-color: var(--green); box-shadow: 0 0 10px rgba(0,255,159,0.08); }
-.terminal-box.info { border-left-color: var(--blue); color: var(--blue); }
+.terminal-box { background:var(--bg-terminal); border:1px solid var(--border); border-left:3px solid var(--green); border-radius:4px; padding:16px; font-family:var(--font-mono); color:var(--green); margin:8px 0; }
+.terminal-box.error  { border-left-color:var(--red);   color:var(--red);   }
+.terminal-box.warning{ border-left-color:var(--amber);  color:var(--amber); }
+.terminal-box.success{ border-left-color:var(--green);  box-shadow:0 0 10px rgba(0,255,159,0.08); }
+.terminal-box.info   { border-left-color:var(--blue);   color:var(--blue);  }
 
-.section-header { display: flex; align-items: center; gap: 10px; margin: 20px 0 12px 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-.section-header span { font-family: var(--font-display); font-size: 0.72rem; letter-spacing: 3px; color: var(--green); text-transform: uppercase; }
+.section-header { display:flex; align-items:center; gap:10px; margin:20px 0 12px 0; padding-bottom:6px; border-bottom:1px solid var(--border); }
+.section-header span { font-family:var(--font-display); font-size:0.72rem; letter-spacing:3px; color:var(--green); text-transform:uppercase; }
 
-.xp-badge { display: inline-block; background: var(--green-dark); border: 1px solid var(--green); color: var(--green); font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 2px; padding: 3px 10px; border-radius: 2px; box-shadow: 0 0 8px var(--green-glow); }
-.level-badge { display: inline-block; background: rgba(0,212,255,0.1); border: 1px solid var(--blue); color: var(--blue); font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 2px; padding: 3px 10px; border-radius: 2px; }
+.xp-badge   { display:inline-block; background:var(--green-dark); border:1px solid var(--green); color:var(--green); font-family:var(--font-display); font-size:0.62rem; letter-spacing:2px; padding:3px 10px; border-radius:2px; box-shadow:0 0 8px var(--green-glow); }
+.level-badge{ display:inline-block; background:rgba(0,212,255,0.1); border:1px solid var(--blue); color:var(--blue); font-family:var(--font-display); font-size:0.62rem; letter-spacing:2px; padding:3px 10px; border-radius:2px; }
 
-.glitch-text { animation: glitch 5s infinite; }
+.glitch-text { animation:glitch 5s infinite; }
 @keyframes glitch {
-  0%, 88%, 100% { text-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,159,0.3); }
-  90% { text-shadow: -2px 0 var(--red), 2px 0 var(--blue); transform: skewX(-1deg); }
-  92% { text-shadow: 2px 0 var(--red), -2px 0 var(--blue); transform: skewX(1deg); }
-  94% { text-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,159,0.3); transform: none; }
+  0%,88%,100% { text-shadow:0 0 20px var(--green),0 0 40px rgba(0,255,159,0.3); }
+  90%  { text-shadow:-2px 0 var(--red),2px 0 var(--blue); transform:skewX(-1deg); }
+  92%  { text-shadow:2px 0 var(--red),-2px 0 var(--blue); transform:skewX(1deg); }
+  94%  { text-shadow:0 0 20px var(--green),0 0 40px rgba(0,255,159,0.3); transform:none; }
 }
 
-.pulse-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.5s infinite; margin-right: 8px; vertical-align: middle; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.pulse-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 6px var(--green); animation:pulse 1.5s infinite; margin-right:8px; vertical-align:middle; }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
 
-.challenge-box { background: linear-gradient(135deg, var(--bg-card) 0%, rgba(0,255,159,0.03) 100%); border: 1px solid var(--border-hot); border-radius: 6px; padding: 20px; margin: 12px 0; position: relative; }
-.challenge-box::before { content: "MISSION"; position: absolute; top: 8px; right: 12px; font-family: var(--font-display); font-size: 0.52rem; letter-spacing: 3px; color: rgba(0,255,159,0.3); }
+.challenge-box { background:linear-gradient(135deg,var(--bg-card) 0%,rgba(0,255,159,0.03) 100%); border:1px solid var(--border-hot); border-radius:6px; padding:20px; margin:12px 0; position:relative; }
+.challenge-box::before { content:"MISSION"; position:absolute; top:8px; right:12px; font-family:var(--font-display); font-size:0.52rem; letter-spacing:3px; color:rgba(0,255,159,0.3); }
 
-.hint-box { background: rgba(255,176,0,0.05); border: 1px solid rgba(255,176,0,0.4); border-left: 3px solid var(--amber); border-radius: 4px; padding: 14px; margin: 8px 0; color: var(--amber); font-family: var(--font-mono); }
+.hint-box { background:rgba(255,176,0,0.05); border:1px solid rgba(255,176,0,0.4); border-left:3px solid var(--amber); border-radius:4px; padding:14px; margin:8px 0; color:var(--amber); font-family:var(--font-mono); }
 
-.stat-bar { height: 4px; background: var(--bg-card); border-radius: 2px; overflow: hidden; margin: 4px 0; }
-.stat-bar-fill { height: 100%; background: linear-gradient(90deg, var(--green-dark), var(--green)); border-radius: 2px; box-shadow: 0 0 6px var(--green); }
+.stat-bar { height:4px; background:var(--bg-card); border-radius:2px; overflow:hidden; margin:4px 0; }
+.stat-bar-fill { height:100%; background:linear-gradient(90deg,var(--green-dark),var(--green)); border-radius:2px; box-shadow:0 0 6px var(--green); }
+
+/* Key source badge colours */
+.key-secrets { color:#00ff9f !important; }
+.key-manual  { color:#ffb000 !important; }
+.key-none    { color:#ff3c5c !important; }
 </style>
 """
 
@@ -175,19 +219,18 @@ st.markdown(CYBERPUNK_CSS, unsafe_allow_html=True)
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║              PERSISTENCE LAYER — COOKIES + FILE             ║
+# ║              PERSISTENCE LAYER — FILE + COOKIES             ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 PROGRESS_FILE = Path("dojo_progress.json")
+COOKIE_NAME   = "dojo_progress_v1"
 
-# Keys that are saved/restored across refreshes
 PERSIST_KEYS = [
     "xp", "day", "streak",
     "challenges_completed", "challenges_attempted",
     "history", "current_lesson",
 ]
 
-# ── Cookie Manager (browser-side backup) ──────────────────────
 @st.cache_resource
 def get_cookie_manager():
     if COOKIES_AVAILABLE:
@@ -197,18 +240,14 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 
 
-# ── File persistence helpers ───────────────────────────────────
 def save_to_file(state: dict):
-    """Write persisted keys to local JSON file."""
     try:
         payload = {k: state.get(k) for k in PERSIST_KEYS}
         PROGRESS_FILE.write_text(json.dumps(payload, default=str, indent=2))
     except Exception:
-        pass  # silently skip on permission errors
-
+        pass
 
 def load_from_file() -> dict:
-    """Load progress from local JSON file, return {} on any error."""
     try:
         if PROGRESS_FILE.exists():
             return json.loads(PROGRESS_FILE.read_text())
@@ -216,14 +255,7 @@ def load_from_file() -> dict:
         pass
     return {}
 
-
-# ── Cookie persistence helpers ─────────────────────────────────
-COOKIE_NAME = "dojo_progress_v1"
-# Cookies have a ~4KB limit per cookie, so we store compact scalar stats
-# and keep the full payload in the JSON file.
-
 def save_to_cookie(state: dict):
-    """Save compact scalar stats to a browser cookie."""
     if not cookie_manager:
         return
     try:
@@ -233,19 +265,12 @@ def save_to_cookie(state: dict):
             "st":  state.get("streak", 0),
             "cc":  state.get("challenges_completed", 0),
             "ca":  state.get("challenges_attempted", 0),
-            "hlen": len(state.get("history") or []),
         }
-        cookie_manager.set(
-            COOKIE_NAME,
-            json.dumps(compact),
-            key="cookie_save_op",
-        )
+        cookie_manager.set(COOKIE_NAME, json.dumps(compact), key="cookie_save_op")
     except Exception:
         pass
 
-
 def load_from_cookie() -> dict:
-    """Load compact stats from browser cookie."""
     if not cookie_manager:
         return {}
     try:
@@ -263,26 +288,14 @@ def load_from_cookie() -> dict:
         pass
     return {}
 
-
-# ── Master save (writes both file and cookie) ──────────────────
 def save_progress():
-    """Persist current session state to file + cookie."""
     state = dict(st.session_state)
     save_to_file(state)
     save_to_cookie(state)
 
-
-# ── Master load (file takes priority over cookies) ────────────
 def load_progress() -> dict:
-    """
-    Load saved progress. Strategy:
-      1. Local JSON file  — most complete (has history, current_lesson)
-      2. Browser cookie   — fallback for scalars if file is missing
-      3. DEFAULTS         — fresh start if nothing found
-    """
     file_data   = load_from_file()
     cookie_data = load_from_cookie()
-
     merged = {}
     for key in PERSIST_KEYS:
         if key in file_data:
@@ -297,30 +310,19 @@ def load_progress() -> dict:
 # ╚══════════════════════════════════════════════════════════════╝
 
 DEFAULTS = {
-    "xp": 0,
-    "day": 0,
-    "streak": 0,
-    "challenges_completed": 0,
-    "challenges_attempted": 0,
-    "current_lesson": None,
-    "current_df": None,
-    "sql_result": None,
-    "python_output": None,
-    "hint_sql": None,
-    "hint_python": None,
-    "last_sql_correct": None,
-    "last_python_correct": None,
-    "last_sql_input": "",
-    "last_python_input": "",
-    "last_sql_error": "",
-    "last_python_error": "",
+    "xp": 0, "day": 0, "streak": 0,
+    "challenges_completed": 0, "challenges_attempted": 0,
+    "current_lesson": None, "current_df": None,
+    "sql_result": None, "python_output": None,
+    "hint_sql": None, "hint_python": None,
+    "last_sql_correct": None, "last_python_correct": None,
+    "last_sql_input": "", "last_python_input": "",
+    "last_sql_error": "", "last_python_error": "",
     "history": [],
-    # internal flags
     "_progress_loaded": False,
-    "_save_toast": False,
+    "_manual_api_key": "",
 }
 
-# ── First-run load from persistent storage ────────────────────
 if not st.session_state.get("_progress_loaded", False):
     saved = load_progress()
     for k, default_val in DEFAULTS.items():
@@ -332,19 +334,17 @@ if not st.session_state.get("_progress_loaded", False):
         elif k not in st.session_state:
             st.session_state[k] = default_val
 
-    # Re-hydrate DataFrame from current_lesson if one was saved
+    # Re-hydrate DataFrame if a lesson was saved
     if st.session_state.get("current_lesson"):
-        _setup_code = st.session_state.current_lesson.get("data_setup", "")
-        if _setup_code:
-            _df, _err = None, ""
+        _code = st.session_state.current_lesson.get("data_setup", "")
+        if _code:
             try:
                 _ns = {}
-                exec(compile(_setup_code, "<restore>", "exec"),
+                exec(compile(_code, "<restore>", "exec"),
                      {"pd": pd, "__builtins__": __builtins__}, _ns)
-                _df = _ns.get("df")
+                st.session_state.current_df = _ns.get("df")
             except Exception:
-                pass
-            st.session_state.current_df = _df
+                st.session_state.current_df = None
 
     st.session_state._progress_loaded = True
 
@@ -355,8 +355,7 @@ if not st.session_state.get("_progress_loaded", False):
 
 LEVEL_CONFIG = {
     "🎖️ Cadet (Basics)": {
-        "id": "cadet",
-        "color": "#00ff9f",
+        "id": "cadet", "color": "#00ff9f",
         "topics": [
             "SQL SELECT and WHERE on transaction tables",
             "Python variables and data types for banking data",
@@ -371,8 +370,7 @@ LEVEL_CONFIG = {
         ],
     },
     "🔬 Analyst (Data)": {
-        "id": "analyst",
-        "color": "#00d4ff",
+        "id": "analyst", "color": "#00d4ff",
         "topics": [
             "Pandas DataFrame loading and inspection of bank transaction records",
             "SQL INNER JOIN linking customer accounts to transactions",
@@ -382,13 +380,12 @@ LEVEL_CONFIG = {
             "Pandas fillna and dropna for cleaning dirty transaction data",
             "SQL CASE WHEN for dynamic risk tier classification",
             "Pandas merge to combine customer profiles and transaction tables",
-            "SQL Common Table Expressions (CTEs) for multi-step AML analysis",
+            "SQL Common Table Expressions for multi-step AML analysis",
             "Pandas pivot_table for monthly transaction pattern heatmaps",
         ],
     },
     "🕵️ Investigator (Patterns)": {
-        "id": "investigator",
-        "color": "#bf5fff",
+        "id": "investigator", "color": "#bf5fff",
         "topics": [
             "Detecting cash structuring and smurfing with SQL HAVING COUNT",
             "Writing Python functions to flag suspicious transaction patterns",
@@ -403,8 +400,7 @@ LEVEL_CONFIG = {
         ],
     },
     "🤖 Architect (ML)": {
-        "id": "architect",
-        "color": "#ffb000",
+        "id": "architect", "color": "#ffb000",
         "topics": [
             "Feature engineering from raw transaction data for fraud ML models",
             "Logistic Regression for binary fraud yes/no classification",
@@ -429,34 +425,34 @@ ALL problems, datasets, and scenarios must involve:
 - PEP and sanctions screening
 - Suspicious Activity Reports (SARs)
 
-Use these domain-specific variable names (never x, y, z):
+Use these domain variable names (never x, y, z):
 - transaction_id, cust_id, account_id, amount, txn_date
 - cust_risk_score, country_code, beneficiary_country
 - is_flagged, alert_id, sar_filed, kyc_status
 - product_type, channel, currency, txn_type
 
-You must respond ONLY with valid JSON. No markdown, no explanation outside JSON."""
+Respond ONLY with valid JSON. No markdown, no explanation outside JSON."""
 
-LESSON_PROMPT_TEMPLATE = """Generate a Financial Crime Analytics training module for a {level}-level student.
-Topic focus: "{topic}"
+LESSON_PROMPT = """Generate a Financial Crime Analytics training module for a {level}-level student.
+Topic: "{topic}"
 
-Return EXACTLY this JSON (no extra fields, no markdown fences):
+Return EXACTLY this JSON (no markdown fences):
 {{
   "topic": "concise topic name",
-  "theory": "3-4 sentences explaining the concept using real AML/fraud terminology. Explain why it matters for investigators.",
-  "data_setup": "complete runnable Python code creating a Pandas DataFrame called df with 8-12 rows of realistic banking data. Must start with: import pandas as pd",
-  "challenge": "a specific concrete task framed as a real investigator scenario. Reference exact column names from data_setup.",
-  "solution_sql": "correct SQLite SQL query solving the challenge. Table name must be: transactions",
-  "solution_python": "correct Python/Pandas code solving the challenge using df. Store final answer in a variable called result and print it."
+  "theory": "3-4 sentences using real AML/fraud terminology. Explain why it matters for investigators.",
+  "data_setup": "complete runnable Python code creating a Pandas DataFrame called df with 8-12 rows. Must start with: import pandas as pd",
+  "challenge": "specific task framed as a real investigator scenario. Reference exact column names from data_setup.",
+  "solution_sql": "correct SQLite SQL. Table name must be: transactions",
+  "solution_python": "correct Python/Pandas using df. Store answer in result and print it."
 }}"""
 
-HINT_PROMPT_TEMPLATE = """A {level}-level Financial Crime Analytics student is stuck.
+HINT_PROMPT = """A {level}-level Financial Crime Analytics student is stuck.
 Topic: "{topic}"
 Challenge: {challenge}
-Their code: {student_code}
-Error/issue: {error}
+Their code: {code}
+Error: {error}
 
-Give ONE targeted hint (2-3 sentences). Be encouraging. Don't reveal the answer. Reference the financial crime context. Plain text only, no JSON."""
+Give ONE targeted hint (2-3 sentences). Be encouraging. Don't reveal the answer. Plain text only."""
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -465,7 +461,7 @@ Give ONE targeted hint (2-3 sentences). Be encouraging. Don't reveal the answer.
 
 def init_gemini(api_key: str):
     if not GEMINI_AVAILABLE:
-        return None, "google-generativeai not installed. Run: pip install google-generativeai"
+        return None, "google-generativeai not installed."
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
@@ -476,32 +472,27 @@ def init_gemini(api_key: str):
     except Exception as e:
         return None, str(e)
 
-
 def generate_lesson(model, level: str, topic: str):
-    prompt = LESSON_PROMPT_TEMPLATE.format(level=level, topic=topic)
     try:
-        response = model.generate_content(
-            prompt,
+        resp = model.generate_content(
+            LESSON_PROMPT.format(level=level, topic=topic),
             generation_config={"temperature": 0.7, "max_output_tokens": 2048},
         )
-        raw = response.text.strip()
-        raw = re.sub(r"^```json\s*", "", raw)
-        raw = re.sub(r"^```\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
+        raw = re.sub(r"^```json\s*|^```\s*|\s*```$", "", resp.text.strip())
         return json.loads(raw), None
     except json.JSONDecodeError as e:
         return None, f"JSON parse error: {e}"
     except Exception as e:
-        return None, f"Gemini error: {e}"
+        return None, str(e)
 
-
-def get_ai_hint(model, level, topic, challenge, student_code, error):
-    prompt = HINT_PROMPT_TEMPLATE.format(
-        level=level, topic=topic, challenge=challenge,
-        student_code=student_code or "(empty)", error=error or "no output",
-    )
+def get_ai_hint(model, level, topic, challenge, code, error):
     try:
-        resp = model.generate_content(prompt, generation_config={"temperature": 0.5, "max_output_tokens": 200})
+        resp = model.generate_content(
+            HINT_PROMPT.format(level=level, topic=topic,
+                               challenge=challenge, code=code or "(empty)",
+                               error=error or "no output"),
+            generation_config={"temperature": 0.5, "max_output_tokens": 200},
+        )
         return resp.text.strip()
     except Exception as e:
         return f"Could not generate hint: {e}"
@@ -514,38 +505,34 @@ def get_ai_hint(model, level, topic, challenge, student_code, error):
 def exec_data_setup(code: str):
     ns = {}
     try:
-        exec(compile(code, "<data_setup>", "exec"), {"pd": pd, "__builtins__": __builtins__}, ns)
+        exec(compile(code, "<data_setup>", "exec"),
+             {"pd": pd, "__builtins__": __builtins__}, ns)
         df = ns.get("df")
-        if df is None:
-            return None, "data_setup must create a variable named 'df'"
-        return df, ""
+        return (df, "") if df is not None else (None, "data_setup must create a variable named 'df'")
     except Exception:
         return None, traceback.format_exc()
 
-
-def exec_sql(sql_query: str, df: pd.DataFrame):
+def exec_sql(sql: str, df: pd.DataFrame):
     try:
         conn = sqlite3.connect(":memory:")
         df.to_sql("transactions", conn, index=False, if_exists="replace")
-        result = pd.read_sql_query(sql_query, conn)
+        result = pd.read_sql_query(sql, conn)
         conn.close()
         return result, ""
     except Exception as e:
         return None, str(e)
 
-
 SAFE_BUILTINS = {
-    "print": print, "len": len, "range": range, "list": list, "dict": dict,
-    "set": set, "tuple": tuple, "int": int, "float": float, "str": str,
-    "bool": bool, "sum": sum, "min": min, "max": max, "abs": abs,
-    "round": round, "sorted": sorted, "enumerate": enumerate, "zip": zip,
-    "map": map, "filter": filter, "isinstance": isinstance, "type": type,
-    "repr": repr, "__import__": __import__,
+    b: __builtins__[b] if isinstance(__builtins__, dict) else getattr(__builtins__, b, None)
+    for b in ("print","len","range","list","dict","set","tuple","int","float","str",
+              "bool","sum","min","max","abs","round","sorted","enumerate","zip",
+              "map","filter","isinstance","type","repr","__import__")
+    if (isinstance(__builtins__, dict) and b in __builtins__) or hasattr(__builtins__, b)
 }
 
 def exec_python(code: str, df: pd.DataFrame):
     buf = io.StringIO()
-    ns = {"df": df.copy(), "pd": pd, "__builtins__": SAFE_BUILTINS}
+    ns  = {"df": df.copy(), "pd": pd, "__builtins__": SAFE_BUILTINS}
     try:
         with redirect_stdout(buf):
             exec(compile(code, "<student>", "exec"), ns)
@@ -563,108 +550,190 @@ def exec_python(code: str, df: pd.DataFrame):
 # ╚══════════════════════════════════════════════════════════════╝
 
 def tb(content: str, box_type: str = "success", title: str = ""):
-    t = f'<div style="font-size:0.62rem;letter-spacing:3px;opacity:0.6;margin-bottom:8px;font-family:var(--font-display)">{title}</div>' if title else ""
+    t = (f'<div style="font-size:0.62rem;letter-spacing:3px;opacity:0.6;'
+         f'margin-bottom:8px;font-family:var(--font-display)">{title}</div>') if title else ""
     st.markdown(
         f'<div class="terminal-box {box_type}">{t}'
-        f'<pre style="margin:0;font-family:var(--font-mono);background:none;border:none;padding:0;color:inherit;white-space:pre-wrap;word-break:break-all">{content}</pre></div>',
+        f'<pre style="margin:0;font-family:var(--font-mono);background:none;border:none;'
+        f'padding:0;color:inherit;white-space:pre-wrap;word-break:break-all">{content}</pre></div>',
         unsafe_allow_html=True,
     )
 
 def sh(icon: str, title: str):
-    st.markdown(f'<div class="section-header"><span>{icon} {title}</span></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section-header"><span>{icon} {title}</span></div>',
+        unsafe_allow_html=True,
+    )
 
 def progress_html(val: int, maxv: int = 100):
     p = min(100, int(val / maxv * 100)) if maxv else 0
-    st.markdown(f'<div class="stat-bar"><div class="stat-bar-fill" style="width:{p}%"></div></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="stat-bar"><div class="stat-bar-fill" style="width:{p}%"></div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                   SIDEBAR                                   ║
+# ║                   RESOLVE API KEY                           ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+api_key, key_source = resolve_api_key()
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║                       SIDEBAR                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 with st.sidebar:
     st.markdown(
         '<div style="text-align:center;padding:16px 0;border-bottom:1px solid rgba(0,255,159,0.2);margin-bottom:16px">'
-        '<div style="font-family:\'Orbitron\',monospace;font-size:1.1rem;color:#00ff9f;text-shadow:0 0 15px #00ff9f;letter-spacing:4px">FINCRIME</div>'
-        '<div style="font-family:\'Orbitron\',monospace;font-size:0.58rem;color:#00cc7a;letter-spacing:6px;margin-top:2px">D O J O</div>'
+        '<div style="font-family:\'Orbitron\',monospace;font-size:1.1rem;color:#00ff9f;'
+        'text-shadow:0 0 15px #00ff9f;letter-spacing:4px">FINCRIME</div>'
+        '<div style="font-family:\'Orbitron\',monospace;font-size:0.58rem;color:#00cc7a;'
+        'letter-spacing:6px;margin-top:2px">D O J O</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:4px">◈ GEMINI API KEY</div>', unsafe_allow_html=True)
-    api_key = st.text_input("API Key", type="password", label_visibility="collapsed", placeholder="AIza...", help="Get a free key at https://makersuite.google.com/app/apikey")
+    # ── API KEY STATUS PANEL ───────────────────────────────────
+    st.markdown(
+        '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">◈ AI ENGINE</div>',
+        unsafe_allow_html=True,
+    )
 
-    if api_key:
-        st.markdown('<span style="font-size:0.68rem;color:#00ff9f">● API KEY ACTIVE</span>', unsafe_allow_html=True)
+    if key_source == "SECRETS":
+        # Key loaded automatically — show locked indicator, no input needed
+        masked = api_key[:8] + "•" * 10 + api_key[-4:]
+        st.markdown(
+            f'<div style="background:rgba(0,255,159,0.05);border:1px solid rgba(0,255,159,0.3);'
+            f'border-radius:4px;padding:10px 12px;">'
+            f'<div style="font-size:0.65rem;color:#00ff9f;margin-bottom:4px">'
+            f'🔐 AUTO-LOADED FROM SECRETS</div>'
+            f'<div style="font-size:0.6rem;color:#00cc7a;font-family:\'Share Tech Mono\',monospace">'
+            f'{masked}</div>'
+            f'<div style="font-size:0.55rem;color:rgba(0,204,122,0.5);margin-top:4px">'
+            f'gemini-2.5-flash  ·  always active</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<span style="font-size:0.68rem;color:#ff3c5c">● NO KEY — LIMITED MODE</span>', unsafe_allow_html=True)
+        # No secret found — show manual input as fallback
+        st.markdown(
+            '<div style="font-size:0.6rem;color:#ffb000;margin-bottom:4px">'
+            '⚠ No secret found — enter key manually</div>',
+            unsafe_allow_html=True,
+        )
+        manual_key = st.text_input(
+            "API Key", type="password",
+            label_visibility="collapsed",
+            placeholder="AIza...",
+            value=st.session_state._manual_api_key,
+            help="Or add GEMINI_KEY to .streamlit/secrets.toml",
+        )
+        if manual_key != st.session_state._manual_api_key:
+            st.session_state._manual_api_key = manual_key
+            api_key, key_source = manual_key, "MANUAL" if manual_key else "NONE"
+            st.rerun()
+
+        if not api_key:
+            st.markdown(
+                '<div style="font-size:0.6rem;color:#ff3c5c;margin-top:4px">'
+                '● OFFLINE — add secrets.toml for auto-login</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="font-size:0.6rem;color:#ffb000;margin-top:4px">'
+                '● MANUAL KEY ACTIVE</div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:4px">◈ DIFFICULTY</div>', unsafe_allow_html=True)
+    # ── DIFFICULTY ────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:4px">◈ DIFFICULTY</div>',
+        unsafe_allow_html=True,
+    )
     difficulty = st.selectbox("Difficulty", list(LEVEL_CONFIG.keys()), label_visibility="collapsed")
     level_data = LEVEL_CONFIG[difficulty]
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:12px">◈ AGENT STATS</div>', unsafe_allow_html=True)
 
+    # ── STATS ─────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:12px">◈ AGENT STATS</div>',
+        unsafe_allow_html=True,
+    )
     c1, c2 = st.columns(2)
-    c1.metric("XP", f"{st.session_state.xp:,}")
-    c2.metric("DAY", st.session_state.day)
+    c1.metric("XP",     f"{st.session_state.xp:,}")
+    c2.metric("DAY",    st.session_state.day)
     c3, c4 = st.columns(2)
     c3.metric("STREAK", f"🔥{st.session_state.streak}")
-    acc = int(st.session_state.challenges_completed / st.session_state.challenges_attempted * 100) if st.session_state.challenges_attempted else 0
-    c4.metric("ACC%", f"{acc}%")
+    _acc = int(st.session_state.challenges_completed /
+               st.session_state.challenges_attempted * 100) \
+        if st.session_state.challenges_attempted else 0
+    c4.metric("ACC%", f"{_acc}%")
 
-    st.markdown('<div style="font-size:0.58rem;letter-spacing:2px;color:#00cc7a;margin-top:8px">XP TO NEXT RANK</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-size:0.58rem;letter-spacing:2px;color:#00cc7a;margin-top:8px">XP TO NEXT RANK</div>',
+        unsafe_allow_html=True,
+    )
     progress_html(st.session_state.xp % 100, 100)
-    st.markdown(f'<div style="font-size:0.58rem;color:#00cc7a;text-align:right">{st.session_state.xp % 100}/100</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:0.58rem;color:#00cc7a;text-align:right">'
+        f'{st.session_state.xp % 100}/100</div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── Persistence status indicator ──────────────────────────
+    # ── SAVE STATUS ───────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    _file_exists = PROGRESS_FILE.exists()
-    _cookie_ok   = bool(COOKIES_AVAILABLE)
     _layers = []
-    if _file_exists: _layers.append("FILE")
-    if _cookie_ok:   _layers.append("COOKIE")
+    if PROGRESS_FILE.exists(): _layers.append("FILE")
+    if COOKIES_AVAILABLE:      _layers.append("COOKIE")
     _save_label = " + ".join(_layers) if _layers else "SESSION ONLY"
-    _save_color = "#00ff9f" if _file_exists else "#ffb000"
+    _save_color = "#00ff9f" if PROGRESS_FILE.exists() else "#ffb000"
     st.markdown(
         f'<div style="background:rgba(0,0,0,0.3);border:1px solid rgba(0,255,159,0.15);'
         f'border-radius:3px;padding:8px 10px;">'
         f'<div style="font-size:0.55rem;letter-spacing:2px;color:#00cc7a;margin-bottom:3px">SAVE STATUS</div>'
         f'<div style="font-size:0.65rem;color:{_save_color}">● {_save_label}</div>'
         f'<div style="font-size:0.52rem;color:rgba(0,204,122,0.5);margin-top:2px">'
-        f'{"Auto-saved  •  Refresh-safe" if _file_exists else "Add API key & start a day to save"}'
+        f'{"Auto-saved · Refresh-safe" if PROGRESS_FILE.exists() else "Start a lesson to begin saving"}'
         f'</div></div>',
         unsafe_allow_html=True,
     )
 
+    # ── HISTORY ───────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     if st.session_state.history:
-        st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">◈ HISTORY</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">◈ HISTORY</div>',
+            unsafe_allow_html=True,
+        )
         for h in st.session_state.history[-5:]:
             icon = "✅" if h.get("completed") else "⚠️"
-            st.markdown(f'<div style="font-size:0.62rem;color:#00cc7a;padding:2px 0">{icon} Day {h["day"]} — {h["topic"][:24]}...</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-size:0.62rem;color:#00cc7a;padding:2px 0">'
+                f'{icon} Day {h["day"]} — {h["topic"][:24]}...</div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("⚡ RESET DOJO", use_container_width=True):
-        # Wipe file
         try:
             if PROGRESS_FILE.exists():
                 PROGRESS_FILE.unlink()
         except Exception:
             pass
-        # Wipe cookie
         if cookie_manager:
             try:
-                cookie_manager.delete(COOKIE_NAME, key="cookie_delete_op")
+                cookie_manager.delete(COOKIE_NAME, key="cookie_del")
             except Exception:
                 pass
-        # Wipe session state
         for k, v in DEFAULTS.items():
             st.session_state[k] = v
-        st.session_state._progress_loaded = True  # don't reload from file
+        st.session_state._progress_loaded = True
         st.rerun()
 
 
@@ -683,30 +752,46 @@ st.markdown(
 # Status bar
 s1, s2, s3, s4 = st.columns(4)
 with s1:
-    st.markdown(f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">LEVEL</div><div style="font-size:0.8rem;color:#00d4ff">{difficulty.split("(")[0].strip()}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">LEVEL</div>'
+        f'<div style="font-size:0.8rem;color:#00d4ff">{difficulty.split("(")[0].strip()}</div>',
+        unsafe_allow_html=True,
+    )
 with s2:
-    n_topics = len(level_data["topics"])
-    d_in_lvl = (st.session_state.day % n_topics) + 1
-    st.markdown(f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">PROGRESS</div><div style="font-size:0.8rem;color:#00ff9f">{d_in_lvl}/{n_topics} topics</div>', unsafe_allow_html=True)
+    _n = len(level_data["topics"])
+    _d = (st.session_state.day % _n) + 1
+    st.markdown(
+        f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">PROGRESS</div>'
+        f'<div style="font-size:0.8rem;color:#00ff9f">{_d}/{_n} topics</div>',
+        unsafe_allow_html=True,
+    )
 with s3:
-    status_t = "LESSON ACTIVE" if st.session_state.current_lesson else "STANDBY"
-    status_c = "#00ff9f" if st.session_state.current_lesson else "#ffb000"
-    st.markdown(f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">STATUS</div><div style="font-size:0.8rem;color:{status_c}">● {status_t}</div>', unsafe_allow_html=True)
+    _st = "LESSON ACTIVE" if st.session_state.current_lesson else "STANDBY"
+    _sc = "#00ff9f" if st.session_state.current_lesson else "#ffb000"
+    st.markdown(
+        f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">STATUS</div>'
+        f'<div style="font-size:0.8rem;color:{_sc}">● {_st}</div>',
+        unsafe_allow_html=True,
+    )
 with s4:
-    ai_c = "#00ff9f" if api_key else "#ff3c5c"
-    ai_t = "GEMINI ONLINE" if api_key else "GEMINI OFFLINE"
-    st.markdown(f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">AI ENGINE</div><div style="font-size:0.8rem;color:{ai_c}">● {ai_t}</div>', unsafe_allow_html=True)
+    _kc = {"SECRETS": "#00ff9f", "MANUAL": "#ffb000", "NONE": "#ff3c5c"}[key_source]
+    _kt = {"SECRETS": "● GEMINI  🔐 SECRETS", "MANUAL": "● GEMINI  ✎ MANUAL", "NONE": "● OFFLINE"}[key_source]
+    st.markdown(
+        f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a">AI ENGINE</div>'
+        f'<div style="font-size:0.8rem;color:{_kc}">{_kt}</div>',
+        unsafe_allow_html=True,
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 if not api_key:
     tb(
-        "⚠  NO GEMINI API KEY\n\n"
-        "  1. Get a FREE key → https://makersuite.google.com/app/apikey\n"
-        "  2. Paste into the sidebar 'GEMINI API KEY' field\n"
-        "  3. Click START DAY to generate your AI lesson\n\n"
-        "  Demo mode below is active while you get your key.",
-        "warning", "SYSTEM NOTICE"
+        "⚠  GEMINI OFFLINE — No API key found.\n\n"
+        "  OPTION 1 (Recommended): Add to .streamlit/secrets.toml:\n"
+        "    GEMINI_KEY = \"AIza...\"\n\n"
+        "  OPTION 2: Paste the key manually in the sidebar.\n\n"
+        "  Demo mode is active below while you set this up.",
+        "warning", "SYSTEM NOTICE",
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -717,16 +802,21 @@ if not api_key:
 
 b1, b2, b3, b4 = st.columns([2, 2, 2, 2])
 with b1:
-    start_clicked = st.button("▶ START DAY" if not st.session_state.current_lesson else "⟳ NEW LESSON", use_container_width=True, disabled=not bool(api_key))
+    start_clicked = st.button(
+        "▶ START DAY" if not st.session_state.current_lesson else "⟳ NEW LESSON",
+        use_container_width=True, disabled=not bool(api_key),
+    )
 with b2:
     next_clicked = st.button("⏭ NEXT TOPIC", use_container_width=True, disabled=not bool(api_key))
 with b3:
-    hint_sql_btn = st.button("💡 HINT (SQL)", use_container_width=True, disabled=not bool(api_key or st.session_state.current_lesson))
+    hint_sql_btn = st.button("💡 HINT (SQL)", use_container_width=True,
+                              disabled=not bool(api_key and st.session_state.current_lesson))
 with b4:
-    hint_py_btn = st.button("💡 HINT (Python)", use_container_width=True, disabled=not bool(api_key or st.session_state.current_lesson))
+    hint_py_btn  = st.button("💡 HINT (Python)", use_container_width=True,
+                              disabled=not bool(api_key and st.session_state.current_lesson))
 
 
-# ── GENERATE LESSON ───────────────────────────────────────────
+# ── Generate lesson ───────────────────────────────────────────
 def load_lesson(advance: bool = False):
     model, err = init_gemini(api_key)
     if err:
@@ -735,7 +825,7 @@ def load_lesson(advance: bool = False):
     if advance:
         st.session_state.day += 1
     topic_idx = st.session_state.day % len(level_data["topics"])
-    topic = level_data["topics"][topic_idx]
+    topic     = level_data["topics"][topic_idx]
     with st.spinner(f"⟳ GENERATING: {topic}..."):
         lesson, err = generate_lesson(model, level_data["id"], topic)
     if lesson:
@@ -744,11 +834,11 @@ def load_lesson(advance: bool = False):
         st.session_state.current_df = df
         if df_err:
             st.warning(f"Data setup warning:\n{df_err}")
-        # Reset per-lesson state
         for k in ["sql_result","python_output","hint_sql","hint_python",
                   "last_sql_correct","last_python_correct",
-                  "last_sql_input","last_python_input","last_sql_error","last_python_error"]:
-            st.session_state[k] = None if "result" in k or "output" in k or "correct" in k else ""
+                  "last_sql_input","last_python_input",
+                  "last_sql_error","last_python_error"]:
+            st.session_state[k] = None if any(x in k for x in ("result","output","correct")) else ""
         if not advance:
             st.session_state.day += 1
         st.session_state.streak += 1
@@ -765,7 +855,7 @@ if next_clicked:
     if st.session_state.current_lesson:
         done = bool(st.session_state.last_sql_correct or st.session_state.last_python_correct)
         st.session_state.history.append({
-            "day": st.session_state.day,
+            "day":   st.session_state.day,
             "topic": st.session_state.current_lesson.get("topic", ""),
             "completed": done,
         })
@@ -807,37 +897,34 @@ if hint_py_btn and st.session_state.current_lesson and api_key:
 
 if st.session_state.current_lesson:
     lesson = st.session_state.current_lesson
-    df = st.session_state.current_df
+    df     = st.session_state.current_df
 
-    # ── THEORY ────────────────────────────────────────────────
+    # ── Theory ────────────────────────────────────────────────
     sh("🧠", f"DAY {st.session_state.day}  —  {lesson.get('topic','LESSON').upper()}")
     tc, bc = st.columns([5, 1])
     with tc:
         st.markdown(
             f'<div class="terminal-box success">'
             f'<div style="font-size:0.6rem;letter-spacing:3px;color:#00cc7a;margin-bottom:8px">▸ INTELLIGENCE BRIEFING</div>'
-            f'{lesson.get("theory","")}'
-            f'</div>',
+            f'{lesson.get("theory","")}</div>',
             unsafe_allow_html=True,
         )
     with bc:
         st.markdown(
             f'<div style="text-align:center;padding-top:16px">'
             f'<div class="xp-badge">+100 XP</div><br><br>'
-            f'<div class="level-badge">{level_data["id"].upper()}</div>'
-            f'</div>',
+            f'<div class="level-badge">{level_data["id"].upper()}</div></div>',
             unsafe_allow_html=True,
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── LIVE DATA ─────────────────────────────────────────────
+    # ── Live data ─────────────────────────────────────────────
     sh("📊", "LIVE BANK DATA — TABLE: transactions")
     if df is not None:
         st.markdown(
             f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin-bottom:6px">'
-            f'⬡ ROWS: {len(df)}  |  COLS: {len(df.columns)}  |  {list(df.columns)}'
-            f'</div>',
+            f'⬡ ROWS: {len(df)}  |  COLS: {len(df.columns)}  |  {list(df.columns)}</div>',
             unsafe_allow_html=True,
         )
         st.dataframe(df, use_container_width=True, height=min(320, 60 + len(df) * 38))
@@ -849,7 +936,7 @@ if st.session_state.current_lesson:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── CHALLENGE ─────────────────────────────────────────────
+    # ── Challenge ─────────────────────────────────────────────
     sh("🕵️", "YOUR MISSION")
     st.markdown(
         f'<div class="challenge-box">'
@@ -860,15 +947,23 @@ if st.session_state.current_lesson:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── TERMINAL TABS ─────────────────────────────────────────
+    # ── Terminal tabs ─────────────────────────────────────────
     sh("💻", "THE TERMINAL")
-    tab_sql, tab_py, tab_sol = st.tabs(["  ⬡ SQL TERMINAL  ", "  ⬡ PYTHON TERMINAL  ", "  ⬡ SOLUTIONS  "])
+    tab_sql, tab_py, tab_sol = st.tabs([
+        "  ⬡ SQL TERMINAL  ", "  ⬡ PYTHON TERMINAL  ", "  ⬡ SOLUTIONS  "
+    ])
 
-    # ─────────────────── SQL ─────────────────────────────────
+    # ── SQL tab ───────────────────────────────────────────────
     with tab_sql:
-        st.markdown('<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin-bottom:6px">> SQL query runs against in-memory SQLite table: transactions</div>', unsafe_allow_html=True)
-        sql_in = st.text_area("SQL", height=150, placeholder="SELECT ...\nFROM transactions\nWHERE ...\nGROUP BY ...", label_visibility="collapsed", key="sql_input_area")
-        rc1, rc2 = st.columns([2, 7])
+        st.markdown(
+            '<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin-bottom:6px">'
+            '> SQL query runs against in-memory SQLite — table name: transactions</div>',
+            unsafe_allow_html=True,
+        )
+        sql_in = st.text_area("SQL", height=150,
+                              placeholder="SELECT ...\nFROM transactions\nWHERE ...",
+                              label_visibility="collapsed", key="sql_input_area")
+        rc1, _ = st.columns([2, 7])
         with rc1:
             run_sql = st.button("▶ EXECUTE SQL", key="exec_sql_btn", use_container_width=True)
 
@@ -882,40 +977,60 @@ if st.session_state.current_lesson:
             else:
                 res_df, sql_err = exec_sql(sql_in, df)
                 if sql_err:
-                    st.session_state.last_sql_error = sql_err
+                    st.session_state.last_sql_error  = sql_err
                     st.session_state.last_sql_correct = False
-                    tb(f"SQLiteError: {sql_err}\n\nTip: Check column names with the schema viewer above.", "error", "EXECUTION ERROR")
+                    tb(f"SQLiteError: {sql_err}\n\nTip: Check column names in the schema viewer above.",
+                       "error", "EXECUTION ERROR")
                     if api_key:
                         model, _ = init_gemini(api_key)
                         if model:
                             with st.spinner("Generating AI hint..."):
-                                h = get_ai_hint(model, level_data["id"], lesson.get("topic",""), lesson.get("challenge",""), sql_in, sql_err)
+                                h = get_ai_hint(model, level_data["id"],
+                                                lesson.get("topic",""), lesson.get("challenge",""),
+                                                sql_in, sql_err)
                             st.session_state.hint_sql = h
                 else:
-                    st.session_state.sql_result = res_df
+                    st.session_state.sql_result  = res_df
                     st.session_state.last_sql_error = ""
                     if res_df is not None and len(res_df) > 0:
                         st.session_state.last_sql_correct = True
                         st.session_state.xp += 25
                         save_progress()
-                        tb(f"✓ QUERY EXECUTED SUCCESSFULLY\n  Rows returned : {len(res_df)}\n  Columns       : {list(res_df.columns)}\n  +25 XP AWARDED", "success", "OUTPUT")
+                        tb(f"✓ QUERY EXECUTED SUCCESSFULLY\n"
+                           f"  Rows returned : {len(res_df)}\n"
+                           f"  Columns       : {list(res_df.columns)}\n"
+                           f"  +25 XP AWARDED", "success", "OUTPUT")
                     else:
                         st.session_state.last_sql_correct = False
-                        tb("⚠ Query ran but returned 0 rows.\nCheck your WHERE/HAVING conditions.", "warning", "OUTPUT")
+                        tb("⚠ Query ran but returned 0 rows.\nCheck your WHERE/HAVING conditions.",
+                           "warning", "OUTPUT")
                 st.rerun()
 
         if st.session_state.sql_result is not None:
-            st.markdown(f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin:12px 0 6px">⬡ RESULT SET — {len(st.session_state.sql_result)} rows</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin:12px 0 6px">'
+                f'⬡ RESULT SET — {len(st.session_state.sql_result)} rows</div>',
+                unsafe_allow_html=True,
+            )
             st.dataframe(st.session_state.sql_result, use_container_width=True)
 
         if st.session_state.hint_sql:
-            st.markdown(f'<div class="hint-box">⚡ AI HINT<br><br>{st.session_state.hint_sql}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="hint-box">⚡ AI HINT<br><br>{st.session_state.hint_sql}</div>',
+                unsafe_allow_html=True,
+            )
 
-    # ─────────────────── PYTHON ──────────────────────────────
+    # ── Python tab ────────────────────────────────────────────
     with tab_py:
-        st.markdown('<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin-bottom:6px">> DataFrame available as: df  |  pandas available as: pd</div>', unsafe_allow_html=True)
-        py_in = st.text_area("Python", height=160, placeholder="# Your code here\nresult = df[df['amount'] > 9000]\nprint(result)", label_visibility="collapsed", key="py_input_area")
-        pc1, pc2 = st.columns([2, 7])
+        st.markdown(
+            '<div style="font-size:0.62rem;letter-spacing:2px;color:#00cc7a;margin-bottom:6px">'
+            '> DataFrame available as: df  |  pandas available as: pd</div>',
+            unsafe_allow_html=True,
+        )
+        py_in = st.text_area("Python", height=160,
+                             placeholder="result = df[df['amount'] > 9000]\nprint(result)",
+                             label_visibility="collapsed", key="py_input_area")
+        pc1, _ = st.columns([2, 7])
         with pc1:
             run_py = st.button("▶ RUN PYTHON", key="exec_py_btn", use_container_width=True)
 
@@ -936,10 +1051,12 @@ if st.session_state.current_lesson:
                         model, _ = init_gemini(api_key)
                         if model:
                             with st.spinner("Generating AI hint..."):
-                                h = get_ai_hint(model, level_data["id"], lesson.get("topic",""), lesson.get("challenge",""), py_in, py_err)
+                                h = get_ai_hint(model, level_data["id"],
+                                                lesson.get("topic",""), lesson.get("challenge",""),
+                                                py_in, py_err)
                             st.session_state.hint_python = h
                 else:
-                    st.session_state.python_output = out
+                    st.session_state.python_output   = out
                     st.session_state.last_python_correct = True
                     st.session_state.xp += 25
                     save_progress()
@@ -950,100 +1067,115 @@ if st.session_state.current_lesson:
             tb(st.session_state.python_output, "success", "LAST OUTPUT")
 
         if st.session_state.hint_python:
-            st.markdown(f'<div class="hint-box">⚡ AI HINT<br><br>{st.session_state.hint_python}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="hint-box">⚡ AI HINT<br><br>{st.session_state.hint_python}</div>',
+                unsafe_allow_html=True,
+            )
 
-    # ─────────────────── SOLUTIONS ───────────────────────────
+    # ── Solutions tab ─────────────────────────────────────────
     with tab_sol:
-        st.markdown('<div style="font-size:0.68rem;letter-spacing:2px;color:#ff3c5c;margin-bottom:16px">⚠ Try on your own first. Viewing solutions does not award XP.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.68rem;letter-spacing:2px;color:#ff3c5c;margin-bottom:16px">'
+            '⚠ Try on your own first. Viewing solutions does not award XP.</div>',
+            unsafe_allow_html=True,
+        )
         sc1, sc2 = st.columns(2)
         with sc1:
-            st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">SQL SOLUTION</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">SQL SOLUTION</div>',
+                unsafe_allow_html=True,
+            )
             st.code(lesson.get("solution_sql", "-- Not available"), language="sql")
             if df is not None and st.button("✓ VERIFY SQL", key="verify_sql_btn"):
                 r, e = exec_sql(lesson.get("solution_sql",""), df)
-                tb(f"✓ Returns {len(r)} rows." if not e else f"Error: {e}", "success" if not e else "error")
+                tb(f"✓ Returns {len(r)} rows." if not e else f"Error: {e}",
+                   "success" if not e else "error")
         with sc2:
-            st.markdown('<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">PYTHON SOLUTION</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:0.62rem;letter-spacing:3px;color:#00cc7a;margin-bottom:6px">PYTHON SOLUTION</div>',
+                unsafe_allow_html=True,
+            )
             st.code(lesson.get("solution_python", "# Not available"), language="python")
             if df is not None and st.button("✓ VERIFY PYTHON", key="verify_py_btn"):
                 o, e = exec_python(lesson.get("solution_python",""), df)
-                tb(f"✓ Output:\n{o}" if not e else f"Error: {e}", "success" if not e else "error")
+                tb(f"✓ Output:\n{o}" if not e else f"Error: {e}",
+                   "success" if not e else "error")
 
     with st.expander("⟫ VIEW AI-GENERATED DATA SETUP CODE"):
         st.code(lesson.get("data_setup","# Not available"), language="python")
 
-# ── EMPTY STATE ───────────────────────────────────────────────
+
+# ── Empty state ───────────────────────────────────────────────
 else:
     st.markdown(
         '<div class="terminal-box" style="text-align:center;padding:56px 40px">'
         '<div style="font-family:\'VT323\',monospace;font-size:3.5rem;color:#00ff9f;margin-bottom:12px">◈</div>'
         '<div style="font-family:\'Orbitron\',monospace;font-size:0.9rem;letter-spacing:4px;color:#00ff9f;margin-bottom:12px">DOJO TERMINAL STANDING BY</div>'
         '<div style="font-size:0.8rem;color:#00cc7a;line-height:2">'
-        '① Add Gemini API key in the sidebar<br>'
-        '② Select your difficulty level<br>'
+        '① API key loaded automatically from secrets.toml<br>'
+        '② Select your difficulty level in the sidebar<br>'
         '③ Click ▶ START DAY to generate your AI-powered lesson'
-        '</div>'
-        '</div>',
+        '</div></div>',
         unsafe_allow_html=True,
     )
 
-    # Demo mode (no API key)
     st.markdown("<br>", unsafe_allow_html=True)
-    sh("⚡", "DEMO MODE — PRACTICE WITHOUT API KEY")
+    sh("⚡", "DEMO MODE — PRACTICE WITHOUT A LESSON")
 
     demo_df = pd.DataFrame({
         "transaction_id": ["TXN_001","TXN_002","TXN_003","TXN_004","TXN_005","TXN_006"],
-        "cust_id": ["C_101","C_102","C_103","C_101","C_104","C_102"],
-        "amount": [9800.0, 14500.0, 500.0, 9500.0, 23000.0, 8900.0],
-        "country_code": ["PK","AE","IN","PK","NG","AE"],
-        "txn_type": ["CASH_DEP","WIRE","CASH_DEP","CASH_DEP","WIRE","CASH_DEP"],
-        "cust_risk_score": [8, 6, 2, 8, 9, 6],
-        "is_flagged": [False, True, False, False, True, False],
+        "cust_id":        ["C_101","C_102","C_103","C_101","C_104","C_102"],
+        "amount":         [9800.0, 14500.0, 500.0, 9500.0, 23000.0, 8900.0],
+        "country_code":   ["PK","AE","IN","PK","NG","AE"],
+        "txn_type":       ["CASH_DEP","WIRE","CASH_DEP","CASH_DEP","WIRE","CASH_DEP"],
+        "cust_risk_score":[8, 6, 2, 8, 9, 6],
+        "is_flagged":     [False, True, False, False, True, False],
     })
 
     tb(
-        "DEMO CHALLENGE\n"
-        "══════════════\n"
-        "A compliance alert fired on the transactions table above.\n"
-        "Mission: Write a SQL query to find all CASH deposits over $9,000\n"
+        "DEMO CHALLENGE\n══════════════\n"
+        "A compliance alert fired. Find all CASH deposits over $9,000\n"
         "from customers with a risk score above 5.\n\n"
-        "Hint: WHERE amount > 9000 AND txn_type = 'CASH_DEP' AND cust_risk_score > 5",
-        "info", "DEMO CASE"
+        "SQL hint  : WHERE amount > 9000 AND txn_type = 'CASH_DEP' AND cust_risk_score > 5\n"
+        "Python hint: df[(df['amount'] > 9000) & (df['txn_type'] == 'CASH_DEP')]",
+        "info", "DEMO CASE",
     )
     st.dataframe(demo_df, use_container_width=True)
 
-    demo_sql = st.text_area("Try SQL here:", height=100, placeholder="SELECT * FROM transactions WHERE ...", key="demo_sql_input")
-    if st.button("▶ RUN DEMO SQL", key="demo_run"):
-        if demo_sql.strip():
-            r, e = exec_sql(demo_sql, demo_df)
-            if e:
-                tb(f"Error: {e}", "error", "SQL ERROR")
+    d1, d2 = st.columns(2)
+    with d1:
+        demo_sql = st.text_area("SQL demo:", height=90,
+                                placeholder="SELECT * FROM transactions WHERE ...",
+                                key="demo_sql_input")
+        if st.button("▶ RUN DEMO SQL", key="demo_sql_run"):
+            if demo_sql.strip():
+                r, e = exec_sql(demo_sql, demo_df)
+                tb(f"Error: {e}" if e else f"✓ {len(r)} rows returned",
+                   "error" if e else "success", "OUTPUT")
+                if not e:
+                    st.dataframe(r, use_container_width=True)
             else:
-                tb(f"✓ {len(r)} rows returned", "success", "OUTPUT")
-                st.dataframe(r, use_container_width=True)
-        else:
-            st.warning("Write a query first.")
-
-    demo_py = st.text_area("Or try Python here:", height=100, placeholder="result = df[df['amount'] > 9000]\nprint(result)", key="demo_py_input")
-    if st.button("▶ RUN DEMO PYTHON", key="demo_py_run"):
-        if demo_py.strip():
-            out, err = exec_python(demo_py, demo_df)
-            if err:
-                tb(err, "error", "ERROR")
+                st.warning("Write a query first.")
+    with d2:
+        demo_py = st.text_area("Python demo:", height=90,
+                               placeholder="result = df[df['amount'] > 9000]\nprint(result)",
+                               key="demo_py_input")
+        if st.button("▶ RUN DEMO PYTHON", key="demo_py_run"):
+            if demo_py.strip():
+                out, err = exec_python(demo_py, demo_df)
+                tb(err if err else out, "error" if err else "success", "OUTPUT")
             else:
-                tb(out, "success", "OUTPUT")
-        else:
-            st.warning("Write some code first.")
+                st.warning("Write some code first.")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                   FOOTER                                    ║
+# ║                       FOOTER                                ║
 # ╚══════════════════════════════════════════════════════════════╝
 st.markdown("<br><br>", unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;padding:16px;border-top:1px solid rgba(0,255,159,0.12);'
     'font-size:0.58rem;letter-spacing:3px;color:rgba(0,255,159,0.25)">'
-    'FINCRIME DOJO v1.0  ·  POWERED BY GOOGLE GEMINI 2.5  ·  BUILT FOR FINANCIAL CRIME ANALYTICS  ·  ALL DATA IS SYNTHETIC'
+    'FINCRIME DOJO v1.0  ·  GEMINI 2.5 FLASH  ·  FINANCIAL CRIME ANALYTICS TRAINING  ·  ALL DATA SYNTHETIC'
     '</div>',
     unsafe_allow_html=True,
 )
